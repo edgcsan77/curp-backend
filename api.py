@@ -21,7 +21,7 @@ app = FastAPI(
 origins = [
     "http://localhost:3000",
     "http://localhost:5173",
-    "https://TU-PROYECTO.vercel.app",
+    "https://siat.sat.validacion-sat.com",
 ]
 
 app.add_middleware(
