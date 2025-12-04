@@ -1,6 +1,4 @@
 # api.py
-# Backend mínimo con FastAPI usando tu código de core_sat.py
-
 import os
 import json
 import random
@@ -9,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
-import core_sat as core  # <-- tu script grande va en core_sat.py
+import core_sat as core  # tu script grande va en core_sat.py
 
 app = FastAPI(
     title="SAT Clon Backend",
@@ -17,12 +15,8 @@ app = FastAPI(
     description="API mínima para generar constancia y datos del QR",
 )
 
-# Ajusta estos dominios cuando tengas tu frontend en Vercel
-origins = [
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "https://siat.sat.validacion-sat.com",
-]
+# Mientras desarrollas, lo dejamos abierto (*); luego pones sólo tu dominio de Vercel
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,7 +35,7 @@ class PeticionConstancia(BaseModel):
 def generar_constancia_endpoint(peticion: PeticionConstancia):
     """
     Genera la constancia y datos del QR a partir de un CURP.
-    Usa SIEMPRE modo automático de domicilio (OSM + SEPOMEX).
+    Usa modo automático (OSM + SEPOMEX) tal como tu main().
     """
     try:
         curp = peticion.curp.strip().upper()
@@ -62,7 +56,7 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
         fecha_alta = fecha_inicio_str_out
         fecha_ultimo_cambio_str_out = core.formatear_dd_mm_aaaa(fecha_ultimo_cambio)
 
-        # === 3) RFC calculado con tu función de TaxDown ===
+        # === 3) RFC calculado con TaxDown ===
         rfc_calculado = core.calcular_rfc_taxdown(
             datos["nombre"],
             datos["apellido_paterno"],
@@ -70,7 +64,7 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
             fecha_nac,
         )
 
-        # === 4) Domicilio automático (la misma lógica que en tu main modo 1) ===
+        # === 4) Domicilio automático (igual que en tu main modo automático) ===
         dom_entidad = datos["entidad_registro"]
         dom_municipio = datos["municipio_registro"]
 
@@ -81,7 +75,7 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
             permitir_fallback=True,
         )
 
-        # === 5) CIF + parámetros D1, D2, D3 para QR ===
+        # === 5) CIF + D1, D2, D3 para el QR ===
         cif_num = random.randint(10_000_000_000, 30_000_000_000)
         cif_str = str(cif_num)
 
@@ -89,11 +83,11 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
         D2 = "1"
         D3 = f"{cif_str}_{rfc_calculado}"  # idCIF_RFC
 
-        # === 6) Armar registro igual que en tu main() ===
+        # === 6) Registro completo (igual que en tu main) ===
         registro = {
             "D1": D1,
             "D2": D2,
-            "D3": D3,  # idCIF_RFC
+            "D3": D3,
 
             "rfc": rfc_calculado,
             "curp": curp,
@@ -116,14 +110,11 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
             "numero_interior": direccion["numero_interior"],
             "cp": direccion["cp"],
 
-            # Campos opcionales que ya traías
             "correo": "",
             "al": "",
         }
 
-        # === 7) (Opcional) guardar en personas.json en este backend ===
-        # Ojo: en Render el disco puede ser efímero (se borra al reiniciar),
-        # es más bien para pruebas.
+        # === 7) Guardar en personas.json (opcional) ===
         try:
             json_path = os.path.join("public", "data", "personas.json")
             os.makedirs(os.path.dirname(json_path), exist_ok=True)
@@ -139,29 +130,29 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(db, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            # No tronamos la API si falla el guardado; solo lo anotamos en logs
             print(f"[WARN] No se pudo guardar personas.json: {e}")
 
-        # === 8) Armar URL de QR y devolver todo al frontend ===
+        # === 8) URL del QR ===
         url_base = (
             "https://siat.sat.validacion-sat.com/"
             "app/qr/faces/pages/mobile/validadorqr.jsf"
         )
         url_qr = f"{url_base}?D1={D1}&D2={D2}&D3={D3}"
 
-        respuesta = {
+        return {
             "cif": cif_str,
             "idcif_rfc": D3,
             "url_qr": url_qr,
             "datos": registro,
         }
 
-        return respuesta
-
     except HTTPException:
-        # re-lanzamos errores HTTP explícitos
         raise
     except Exception as e:
-        # cualquier otra cosa es 500
-        print(f"[ERROR] {e!r}")
-        raise HTTPException(status_code=500, detail="Error interno en el servidor")
+        import traceback
+        tb = traceback.format_exc()
+        print(tb)
+        raise HTTPException(
+            status_code=500,
+            detail=f"{type(e).__name__}: {e}",
+        )
