@@ -3,5 +3,4 @@ uvicorn[standard]
 pydantic
 requests
 selenium
-webdriver-manager
 osmnx
