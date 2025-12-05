@@ -9,14 +9,20 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import core_sat as core  # tu script grande va en core_sat.py
 
+from db import Base, engine, SessionLocal
+from models import Persona
+from sqlalchemy.orm import Session
+
+# ======================================================
+#  APP FASTAPI
+# ======================================================
 app = FastAPI(
     title="SAT Clon Backend",
     version="1.0.0",
     description="API mínima para generar constancia y datos del QR",
 )
 
-# Mientras desarrollas, lo dejamos abierto (*); luego pones sólo tu dominio de Vercel
-origins = ["*"]
+origins = ["*"]  # luego puedes restringir a tu dominio de Vercel
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,16 +32,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Crear tablas al arrancar
+@app.on_event("startup")
+def on_startup():
+    Base.metadata.create_all(bind=engine)
 
+
+# Dependencia de sesión DB (estilo FastAPI)
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# ======================================================
+#  ESQUEMAS
+# ======================================================
 class PeticionConstancia(BaseModel):
     curp: str
 
 
+# ======================================================
+#  ENDPOINT: GENERAR CONSTANCIA
+# ======================================================
 @app.post("/api/constancia")
-def generar_constancia_endpoint(peticion: PeticionConstancia):
+def generar_constancia_endpoint(peticion: PeticionConstancia, db: Session = next(get_db())):
     """
     Genera la constancia y datos del QR a partir de un CURP.
-    Usa modo automático (OSM + SEPOMEX) tal como tu main().
+    Si ya existe una persona con ese RFC, reutiliza el mismo D3 (QR estable).
     """
     try:
         curp = peticion.curp.strip().upper()
@@ -43,11 +69,11 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
             raise HTTPException(status_code=400, detail="CURP debe tener 18 caracteres")
 
         # === 1) Consultar datos en gob.mx/curp usando tu función ===
-        datos = core.consultar_curp(curp)
+        datos_curp = core.consultar_curp(curp)
 
         # === 2) Fechas ===
         fecha_nac, fecha_inicio_operaciones = core.generar_fechas(
-            datos["fecha_nac_str"]
+            datos_curp["fecha_nac_str"]
         )
         fecha_ultimo_cambio = fecha_inicio_operaciones
 
@@ -58,15 +84,40 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
 
         # === 3) RFC calculado con TaxDown ===
         rfc_calculado = core.calcular_rfc_taxdown(
-            datos["nombre"],
-            datos["apellido_paterno"],
-            datos["apellido_materno"],
+            datos_curp["nombre"],
+            datos_curp["apellido_paterno"],
+            datos_curp["apellido_materno"],
             fecha_nac,
         )
 
+        # 🔹 3.1 Revisar si YA existe este RFC en la BD
+        persona_existente: Persona | None = (
+            db.query(Persona).filter(Persona.rfc == rfc_calculado).first()
+        )
+
+        if persona_existente:
+            # Reusar datos y D3 → QR estable
+            D3 = persona_existente.d3
+            cif_str = persona_existente.cif
+            registro = persona_existente.datos
+
+            url_base = (
+                "https://siat.sat.validacion-sat.com/"
+                "app/qr/faces/pages/mobile/validadorqr.jsf"
+            )
+            url_qr = f"{url_base}?D1={registro['D1']}&D2={registro['D2']}&D3={D3}"
+
+            return {
+                "cif": cif_str,
+                "idcif_rfc": D3,
+                "url_qr": url_qr,
+                "datos": registro,
+                "reutilizado": True,
+            }
+
         # === 4) Domicilio automático (igual que en tu main modo automático) ===
-        dom_entidad = datos["entidad_registro"]
-        dom_municipio = datos["municipio_registro"]
+        dom_entidad = datos_curp["entidad_registro"]
+        dom_municipio = datos_curp["municipio_registro"]
 
         direccion = core.generar_direccion_real(
             dom_entidad,
@@ -75,7 +126,7 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
             permitir_fallback=True,
         )
 
-        # === 5) CIF + D1, D2, D3 para el QR ===
+        # === 5) CIF + D1, D2, D3 para el QR (nuevo registro) ===
         cif_num = random.randint(10_000_000_000, 30_000_000_000)
         cif_str = str(cif_num)
 
@@ -91,9 +142,9 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
 
             "rfc": rfc_calculado,
             "curp": curp,
-            "nombre": datos["nombre"],
-            "apellido_paterno": datos["apellido_paterno"],
-            "apellido_materno": datos["apellido_materno"],
+            "nombre": datos_curp["nombre"],
+            "apellido_paterno": datos_curp["apellido_paterno"],
+            "apellido_materno": datos_curp["apellido_materno"],
             "fecha_nacimiento": fecha_nac_str_out,
             "fecha_inicio_operaciones": fecha_inicio_str_out,
             "situacion_contribuyente": core.SITUACION_CONTRIBUYENTE,
@@ -114,23 +165,18 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
             "al": "",
         }
 
-        # === 7) Guardar en personas.json (opcional) ===
-        try:
-            json_path = os.path.join("public", "data", "personas.json")
-            os.makedirs(os.path.dirname(json_path), exist_ok=True)
+        # === 7) Guardar en BD (YA NO EN personas.json) ===
+        persona_nueva = Persona(
+            cif=cif_str,
+            d3=D3,
+            rfc=rfc_calculado,
+            curp=curp,
+            datos=registro,
+        )
 
-            try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    db = json.load(f)
-            except (FileNotFoundError, json.JSONDecodeError):
-                db = {}
-
-            db[D3] = registro
-
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(db, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[WARN] No se pudo guardar personas.json: {e}")
+        db.add(persona_nueva)
+        db.commit()
+        db.refresh(persona_nueva)
 
         # === 8) URL del QR ===
         url_base = (
@@ -144,6 +190,7 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
             "idcif_rfc": D3,
             "url_qr": url_qr,
             "datos": registro,
+            "reutilizado": False,
         }
 
     except HTTPException:
@@ -157,22 +204,20 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
             detail=f"{type(e).__name__}: {e}",
         )
 
+
+# ======================================================
+#  ENDPOINT: OBTENER PERSONA POR D3
+# ======================================================
 @app.get("/api/persona/{d3}")
-def obtener_persona(d3: str):
+def obtener_persona(d3: str, db: Session = next(get_db())):
     """
     Devuelve los datos de una persona usando el mismo D3 que va en el QR
     (idCIF_RFC, por ejemplo: 24914557872_CASE020722MP6).
-    Lee public/data/personas.json que se fue llenando en /api/constancia.
+    Lee desde Postgres.
     """
-    json_path = os.path.join("public", "data", "personas.json")
+    persona: Persona | None = db.query(Persona).filter(Persona.d3 == d3).first()
 
-    try:
-        with open(json_path, "r", encoding="utf-8") as f:
-            db = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        db = {}
-
-    if d3 not in db:
+    if not persona:
         raise HTTPException(status_code=404, detail="Registro no encontrado")
 
-    return db[d3]
+    return persona.datos
