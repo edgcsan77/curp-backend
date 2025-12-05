@@ -156,3 +156,23 @@ def generar_constancia_endpoint(peticion: PeticionConstancia):
             status_code=500,
             detail=f"{type(e).__name__}: {e}",
         )
+
+@app.get("/api/persona/{d3}")
+def obtener_persona(d3: str):
+    """
+    Devuelve los datos de una persona usando el mismo D3 que va en el QR
+    (idCIF_RFC, por ejemplo: 24914557872_CASE020722MP6).
+    Lee public/data/personas.json que se fue llenando en /api/constancia.
+    """
+    json_path = os.path.join("public", "data", "personas.json")
+
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            db = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        db = {}
+
+    if d3 not in db:
+        raise HTTPException(status_code=404, detail="Registro no encontrado")
+
+    return db[d3]
