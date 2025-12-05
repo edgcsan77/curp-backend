@@ -11,10 +11,10 @@ import requests
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
+#from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+#from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.keys import Keys
 
 import osmnx as ox
@@ -521,19 +521,13 @@ def consultar_curp(curp):
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
 
-    # Para que funcione tanto en tu PC como en Render (Docker)
+    # Si existe CHROME_BIN (Docker/Render), úsalo; si no, Chrome normal en tu PC
     chrome_bin = os.environ.get("CHROME_BIN")
     if chrome_bin:
         options.binary_location = chrome_bin
 
-    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH")
-    if chromedriver_path:
-        service = Service(chromedriver_path)
-    else:
-        # En tu PC, webdriver_manager descargará el driver como antes
-        service = Service(ChromeDriverManager().install())
-
-    driver = webdriver.Chrome(service=service, options=options)
+    # Selenium Manager se encarga de bajar el driver correcto
+    driver = webdriver.Chrome(options=options)
 
     try:
         driver.get(URL_CURP)
@@ -610,10 +604,11 @@ def calcular_rfc_taxdown(nombre, apellido_paterno, apellido_materno, fecha_nac):
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
 
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=options
-    )
+    chrome_bin = os.environ.get("CHROME_BIN")
+    if chrome_bin:
+        options.binary_location = chrome_bin
+
+    driver = webdriver.Chrome(options=options)
 
     try:
         driver.get(URL_RFC)
