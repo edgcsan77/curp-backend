@@ -46,13 +46,20 @@ def get_db():
     finally:
         db.close()
 
-
-# ======================================================
-#  ESQUEMAS
-# ======================================================
+# ===== ESQUEMAS =====
 class PeticionConstancia(BaseModel):
     curp: str
 
+    # datos que ANTES venían de gob.mx/curp
+    nombre: str
+    apellido_paterno: str
+    apellido_materno: str
+    fecha_nac_str: str            # "DD/MM/AAAA"
+    entidad_registro: str
+    municipio_registro: str
+
+    # opcional: si ya copias el RFC (p.ej. de TaxDown)
+    rfc: str | None = None
 
 # ======================================================
 #  ENDPOINT: GENERAR CONSTANCIA
@@ -69,7 +76,14 @@ def generar_constancia_endpoint(peticion: PeticionConstancia, db: Session = next
             raise HTTPException(status_code=400, detail="CURP debe tener 18 caracteres")
 
         # === 1) Consultar datos en gob.mx/curp usando tu función ===
-        datos_curp = core.consultar_curp(curp)
+        datos_curp = {
+            "nombre": peticion.nombre.strip().upper(),
+            "apellido_paterno": peticion.apellido_paterno.strip().upper(),
+            "apellido_materno": peticion.apellido_materno.strip().upper(),
+            "fecha_nac_str": peticion.fecha_nac_str.strip(),
+            "entidad_registro": peticion.entidad_registro.strip().upper(),
+            "municipio_registro": peticion.municipio_registro.strip().upper(),
+        }
 
         # === 2) Fechas ===
         fecha_nac, fecha_inicio_operaciones = core.generar_fechas(
@@ -82,13 +96,16 @@ def generar_constancia_endpoint(peticion: PeticionConstancia, db: Session = next
         fecha_alta = fecha_inicio_str_out
         fecha_ultimo_cambio_str_out = core.formatear_dd_mm_aaaa(fecha_ultimo_cambio)
 
-        # === 3) RFC calculado con TaxDown ===
-        rfc_calculado = core.calcular_rfc_taxdown(
-            datos_curp["nombre"],
-            datos_curp["apellido_paterno"],
-            datos_curp["apellido_materno"],
-            fecha_nac,
-        )
+        # === 3) RFC ===
+        if peticion.rfc:
+            rfc_calculado = peticion.rfc.strip().upper()
+        else:
+            # si quieres, puedes implementar después una función local sin Selenium
+            # por ahora lanzo error claro para que te acuerdes de enviarlo
+            raise HTTPException(
+                status_code=400,
+                detail="Falta el RFC en la petición (campo 'rfc')."
+            )
 
         # 🔹 3.1 Revisar si YA existe este RFC en la BD
         persona_existente: Persona | None = (
