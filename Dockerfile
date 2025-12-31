@@ -1,26 +1,22 @@
-# Dockerfile
+# Dockerfile SIN Chromium
 FROM python:3.11-slim
 
-# 1) Instalar SOLO Chromium (sin chromium-driver)
-RUN apt-get update && apt-get install -y \
-    chromium \
-    fonts-liberation \
-    wget \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# 2) Selenium usará este binario de Chrome
-ENV CHROME_BIN=/usr/bin/chromium
-
-# 3) Directorio de trabajo
+# 1) Directorio de trabajo
 WORKDIR /app
 
-# 4) Dependencias de Python
+# 2) Dependencias del sistema (solo lo necesario para osmnx/psycopg2)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gdal-bin \
+    libgdal-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 3) Dependencias de Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 5) Copiar código
+# 4) Copiar código
 COPY . .
 
-# 6) Ejecutar FastAPI con uvicorn (Render pone $PORT)
+# 5) Ejecutar FastAPI con uvicorn
 CMD ["sh", "-c", "uvicorn api:app --host 0.0.0.0 --port ${PORT:-10000}"]
