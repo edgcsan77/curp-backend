@@ -2,7 +2,6 @@ fastapi
 uvicorn[standard]
 pydantic
 requests
-selenium
 osmnx
 sqlalchemy
 psycopg2-binary
