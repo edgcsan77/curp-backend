@@ -9,13 +9,13 @@ from datetime import datetime, date
 
 import requests
 
-from selenium import webdriver
-from selenium.webdriver.common.by import By
+#from selenium import webdriver
+#from selenium.webdriver.common.by import By
 #from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+#from selenium.webdriver.support.ui import WebDriverWait
+#from selenium.webdriver.support import expected_conditions as EC
 #from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.common.keys import Keys
+#from selenium.webdriver.common.keys import Keys
 
 import osmnx as ox
 import json
@@ -507,167 +507,16 @@ def formatear_dd_mm_aaaa(fecha_obj):
     return fecha_obj.strftime("%d-%m-%Y")
 
 def consultar_curp(curp):
-    """
-    Abre gob.mx/curp, consulta el CURP y devuelve un diccionario con:
-      - nombre
-      - apellido_paterno
-      - apellido_materno
-      - fecha_nac_str (DD/MM/AAAA)
-      - entidad_registro
-      - municipio_registro
-    """
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-
-    # Si existe CHROME_BIN (Docker/Render), úsalo; si no, Chrome normal en tu PC
-    chrome_bin = os.environ.get("CHROME_BIN")
-    if chrome_bin:
-        options.binary_location = chrome_bin
-
-    # Selenium Manager se encarga de bajar el driver correcto
-    driver = webdriver.Chrome(options=options)
-
-    try:
-        driver.get(URL_CURP)
-        wait = WebDriverWait(driver, 20)
-
-        curp_input = wait.until(
-            EC.presence_of_element_located((By.ID, "curpinput"))
-        )
-        curp_input.clear()
-        curp_input.send_keys(curp)
-
-        clicked = False
-        posibles_botones = [
-            "//button[contains(normalize-space(.), 'Consultar')]",
-            "//button[contains(normalize-space(.), 'Buscar')]",
-            "//input[@type='submit']"
-        ]
-
-        for xpath in posibles_botones:
-            try:
-                btn = driver.find_element(By.XPATH, xpath)
-                btn.click()
-                clicked = True
-                break
-            except Exception:
-                continue
-
-        if not clicked:
-            raise RuntimeError("No se encontró el botón de consulta en gob.mx/curp.")
-
-        wait.until(
-            EC.presence_of_element_located(
-                (By.XPATH, "//td[contains(normalize-space(.), 'Nombre(s)')]")
-            )
-        )
-
-        def get_valor_por_label(texto_label_parcial):
-            xpath = (
-                f"//tr[td[contains(normalize-space(.), '{texto_label_parcial}')]]"
-                f"/td[position()=2]"
-            )
-            elem = driver.find_element(By.XPATH, xpath)
-            return elem.text.strip()
-
-        nombre = get_valor_por_label("Nombre(s)")
-        apellido_paterno = get_valor_por_label("Primer apellido")
-        apellido_materno = get_valor_por_label("Segundo apellido")
-        fecha_nac_str = get_valor_por_label("Fecha de nacimiento")
-
-        entidad_registro_raw = get_valor_por_label("Entidad de registro")
-        municipio_registro_raw = get_valor_por_label("Municipio de registro")
-
-        entidad_registro = solo_letras(entidad_registro_raw)
-        municipio_registro = solo_letras(municipio_registro_raw)
-
-        return {
-            "nombre": nombre,
-            "apellido_paterno": apellido_paterno,
-            "apellido_materno": apellido_materno,
-            "fecha_nac_str": fecha_nac_str,
-            "entidad_registro": entidad_registro,
-            "municipio_registro": municipio_registro,
-        }
-
-    finally:
-        driver.quit()
+    raise RuntimeError(
+        "consultar_curp() ya no usa Selenium. "
+        "Ahora los datos del CURP deben venir en el request."
+    )
 
 def calcular_rfc_taxdown(nombre, apellido_paterno, apellido_materno, fecha_nac):
-    """
-    Abre la calculadora de RFC de TaxDown, rellena los datos y devuelve el RFC.
-    """
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-
-    chrome_bin = os.environ.get("CHROME_BIN")
-    if chrome_bin:
-        options.binary_location = chrome_bin
-
-    driver = webdriver.Chrome(options=options)
-
-    try:
-        driver.get(URL_RFC)
-        wait = WebDriverWait(driver, 20)
-
-        calculadora_titulo = wait.until(
-            EC.presence_of_element_located(
-                (By.XPATH, "//*[contains(normalize-space(.), 'Calcula tu RFC')]")
-            )
-        )
-        driver.execute_script("arguments[0].scrollIntoView(true);", calculadora_titulo)
-
-        input_nombre = wait.until(
-            EC.presence_of_element_located((By.NAME, "name"))
-        )
-        input_nombre.clear()
-        input_nombre.send_keys(nombre)
-
-        input_ap_paterno = driver.find_element(By.NAME, "lastNamePaternal")
-        input_ap_paterno.clear()
-        input_ap_paterno.send_keys(apellido_paterno)
-
-        input_ap_materno = driver.find_element(By.NAME, "lastNameMaternal")
-        input_ap_materno.clear()
-        input_ap_materno.send_keys(apellido_materno)
-
-        fecha_str_rfc = fecha_nac.strftime("%Y-%m-%d")
-
-        input_fecha = wait.until(
-            EC.element_to_be_clickable((By.NAME, "birthdate"))
-        )
-        driver.execute_script(
-            "arguments[0].value = arguments[1];",
-            input_fecha,
-            fecha_str_rfc
-        )
-
-        btn_calcular = wait.until(
-            EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, "a.solid_btn.green.btn-continuar-exec")
-            )
-        )
-
-        driver.execute_script(
-            "arguments[0].scrollIntoView({block: 'center'});", btn_calcular
-        )
-        driver.execute_script("arguments[0].click();", btn_calcular)
-
-        rfc_elem = wait.until(
-            EC.visibility_of_element_located(
-                (By.CSS_SELECTOR, "div.resultado-script")
-            )
-        )
-
-        rfc = rfc_elem.text.strip()
-        return rfc
-
-    finally:
-        driver.quit()
+    raise RuntimeError(
+        "calcular_rfc_taxdown() ya no usa Selenium. "
+        "Envía el RFC calculado en el campo 'rfc' del request."
+    )
 
 # ============================================================
 #  SEPOMEX: índices para colonia/CP por estado y municipio
