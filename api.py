@@ -3,7 +3,7 @@ import os
 import json
 import random
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -49,23 +49,27 @@ def get_db():
 # ===== ESQUEMAS =====
 class PeticionConstancia(BaseModel):
     curp: str
-
-    # datos que ANTES venían de gob.mx/curp
     nombre: str
     apellido_paterno: str
     apellido_materno: str
-    fecha_nac_str: str            # "DD/MM/AAAA"
+    fecha_nac_str: str
     entidad_registro: str
     municipio_registro: str
+    rfc: str
 
-    # opcional: si ya copias el RFC (p.ej. de TaxDown)
-    rfc: str | None = None
+    # domicilio opcional (si no lo mandas, se genera con OSM+SEPOMEX)
+    colonia: str | None = None
+    tipo_vialidad: str | None = None
+    nombre_vialidad: str | None = None
+    numero_exterior: str | None = None
+    numero_interior: str | None = None
+    cp: str | None = None
 
 # ======================================================
 #  ENDPOINT: GENERAR CONSTANCIA
 # ======================================================
 @app.post("/api/constancia")
-def generar_constancia_endpoint(peticion: PeticionConstancia, db: Session = next(get_db())):
+def generar_constancia_endpoint(peticion: PeticionConstancia, db: Session = Depends(get_db)):
     """
     Genera la constancia y datos del QR a partir de un CURP.
     Si ya existe una persona con ese RFC, reutiliza el mismo D3 (QR estable).
@@ -132,16 +136,28 @@ def generar_constancia_endpoint(peticion: PeticionConstancia, db: Session = next
                 "reutilizado": True,
             }
 
-        # === 4) Domicilio automático (igual que en tu main modo automático) ===
+        # === 4) DOMICILIO ===
         dom_entidad = datos_curp["entidad_registro"]
         dom_municipio = datos_curp["municipio_registro"]
-
-        direccion = core.generar_direccion_real(
-            dom_entidad,
-            dom_municipio,
-            ruta_sepomex="sepomex.csv",
-            permitir_fallback=True,
-        )
+        
+        # Si viene domicilio manual “completo o parcial”, úsalo
+        if any([peticion.colonia, peticion.cp, peticion.nombre_vialidad, peticion.numero_exterior]):
+            direccion = {
+                "colonia": (peticion.colonia or "").strip().upper() or "S/C",
+                "tipo_vialidad": (peticion.tipo_vialidad or "").strip().upper() or "CALLE",
+                "nombre_vialidad": (peticion.nombre_vialidad or "").strip().upper() or "S/N",
+                "numero_exterior": (peticion.numero_exterior or "").strip().upper() or "S/N",
+                "numero_interior": (peticion.numero_interior or "").strip().upper() or "",
+                "cp": (peticion.cp or "").strip() or "00000",
+            }
+        else:
+            # automático como ya lo tienes
+            direccion = core.generar_direccion_real(
+                dom_entidad,
+                dom_municipio,
+                ruta_sepomex="sepomex.csv",
+                permitir_fallback=True,
+            )
 
         # === 5) CIF + D1, D2, D3 para el QR (nuevo registro) ===
         cif_num = random.randint(10_000_000_000, 30_000_000_000)
@@ -226,7 +242,7 @@ def generar_constancia_endpoint(peticion: PeticionConstancia, db: Session = next
 #  ENDPOINT: OBTENER PERSONA POR D3
 # ======================================================
 @app.get("/api/persona/{d3}")
-def obtener_persona(d3: str, db: Session = next(get_db())):
+def obtener_persona(d3: str, db: Session = Depends(get_db)):
     """
     Devuelve los datos de una persona usando el mismo D3 que va en el QR
     (idCIF_RFC, por ejemplo: 24914557872_CASE020722MP6).
