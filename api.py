@@ -13,6 +13,16 @@ from db import Base, engine, SessionLocal
 from models import Persona
 from sqlalchemy.orm import Session
 
+from fastapi.responses import FileResponse
+from fastapi import Depends
+from sqlalchemy.orm import Session
+from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo
+import tempfile
+
+from docx_utils import generar_docx_desde_plantilla
+
 # ======================================================
 #  APP FASTAPI
 # ======================================================
@@ -236,7 +246,118 @@ def generar_constancia_endpoint(peticion: PeticionConstancia, db: Session = Depe
             status_code=500,
             detail=f"{type(e).__name__}: {e}",
         )
+        
+@app.post("/api/constancia/docx")
+def generar_constancia_docx(peticion: PeticionConstancia, db: Session = Depends(get_db)):
+    # 1) Validaciones mínimas
+    curp = peticion.curp.strip().upper()
+    if len(curp) != 18:
+        raise HTTPException(status_code=400, detail="CURP debe tener 18 caracteres")
 
+    rfc = (peticion.rfc or "").strip().upper()
+    if not rfc:
+        raise HTTPException(status_code=400, detail="Falta el RFC (campo 'rfc').")
+
+    # 2) Usa tu misma lógica base (fechas + dirección + cif/d3 + BD si quieres)
+    datos_curp = {
+        "nombre": peticion.nombre.strip().upper(),
+        "apellido_paterno": peticion.apellido_paterno.strip().upper(),
+        "apellido_materno": peticion.apellido_materno.strip().upper(),
+        "fecha_nac_str": peticion.fecha_nac_str.strip(),  # "DD/MM/AAAA"
+        "entidad_registro": peticion.entidad_registro.strip().upper(),
+        "municipio_registro": peticion.municipio_registro.strip().upper(),
+    }
+
+    fecha_nac, fecha_inicio_operaciones = core.generar_fechas(datos_curp["fecha_nac_str"])
+    fecha_ultimo_cambio = fecha_inicio_operaciones
+
+    fecha_nac_str_out = core.formatear_dd_mm_aaaa(fecha_nac)
+    fecha_inicio_str_out = core.formatear_dd_mm_aaaa(fecha_inicio_operaciones)
+    fecha_alta = fecha_inicio_str_out
+    fecha_ultimo_cambio_str_out = core.formatear_dd_mm_aaaa(fecha_ultimo_cambio)
+
+    # Dirección (auto). Si luego quieres manual, aquí haces el if/else.
+    direccion = core.generar_direccion_real(
+        datos_curp["entidad_registro"],
+        datos_curp["municipio_registro"],
+        ruta_sepomex="sepomex.csv",
+        permitir_fallback=True,
+    )
+
+    # CIF y D3 (igual que tu endpoint JSON)
+    cif_num = random.randint(10_000_000_000, 30_000_000_000)
+    cif_str = str(cif_num)
+
+    D1, D2 = "10", "1"
+    D3 = f"{cif_str}_{rfc}"
+
+    # 3) Armar “datos” con las llaves que tu plantilla espera (estilo primer backend)
+    ahora = datetime.now(ZoneInfo("America/Mexico_City"))
+    fecha_corta = ahora.strftime("%Y/%m/%d %H:%M:%S")
+
+    # Si quieres “fecha larga” tipo "REYNOSA, TAMAULIPAS A 01 DE ENERO DE 2026"
+    # por ahora simple:
+    fecha_larga = f"{ahora.strftime('%d')} DE {ahora.strftime('%m')} DE {ahora.strftime('%Y')}"
+
+    nombre_etiqueta = " ".join(
+        x for x in [
+            datos_curp["nombre"],
+            datos_curp["apellido_paterno"],
+            datos_curp["apellido_materno"],
+        ] if x
+    ).strip()
+
+    datos_doc = {
+        "RFC_ETIQUETA": rfc,
+        "NOMBRE_ETIQUETA": nombre_etiqueta,
+        "IDCIF_ETIQUETA": cif_str,
+
+        "RFC": rfc,
+        "CURP": curp,
+        "NOMBRE": datos_curp["nombre"],
+        "PRIMER_APELLIDO": datos_curp["apellido_paterno"],
+        "SEGUNDO_APELLIDO": datos_curp["apellido_materno"],
+
+        "FECHA_INICIO": fecha_inicio_str_out,          # si tu plantilla usa formato texto, cámbialo
+        "ESTATUS": core.SITUACION_CONTRIBUYENTE,
+        "FECHA_ULTIMO": fecha_ultimo_cambio_str_out,
+        "FECHA": fecha_larga,
+        "FECHA_CORTA": fecha_corta,
+
+        "CP": direccion["cp"],
+        "TIPO_VIALIDAD": direccion["tipo_vialidad"],
+        "VIALIDAD": direccion["nombre_vialidad"],
+        "NO_EXTERIOR": direccion["numero_exterior"],
+        "NO_INTERIOR": direccion["numero_interior"],
+        "COLONIA": direccion["colonia"],
+        "LOCALIDAD": datos_curp["municipio_registro"],
+        "ENTIDAD": core.formatear_entidad_salida(datos_curp["entidad_registro"]),
+
+        "REGIMEN": core.REGIMEN,  # si luego lo mandas manual, aquí lo pones
+        "FECHA_ALTA": fecha_alta,
+    }
+
+    # 4) Elegir plantilla (asalariado vs normal)
+    base_dir = Path(__file__).resolve().parent
+
+    regimen = (datos_doc.get("REGIMEN") or "").strip()
+    if regimen == "Régimen de Sueldos y Salarios e Ingresos Asimilados a Salarios":
+        plantilla = base_dir / "plantilla-asalariado.docx"
+    else:
+        plantilla = base_dir / "plantilla.docx"
+
+    if not plantilla.exists():
+        raise HTTPException(status_code=500, detail=f"No existe la plantilla: {plantilla.name}")
+
+    # 5) Generar DOCX y responder descarga
+    ruta_docx = generar_docx_desde_plantilla(datos_doc, str(plantilla))
+
+    filename = f"{curp}_RFC.docx"
+    return FileResponse(
+        ruta_docx,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=filename,
+    )
 
 # ======================================================
 #  ENDPOINT: OBTENER PERSONA POR D3
