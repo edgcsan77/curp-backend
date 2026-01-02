@@ -55,10 +55,7 @@ def reemplazar_en_documento(ruta_entrada: str, ruta_salida: str, datos: dict):
     idcif_val = datos.get("IDCIF_ETIQUETA") or datos.get("IDCIF") or ""
 
     d3 = f"{idcif_val}_{rfc_val}" if idcif_val else ""
-    url_qr = (
-        "https://siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf"
-        f"?D1=10&D2=1&D3={d3}"
-    )
+    url_qr = f"https://siat.sat.validacion-sat.com/app/qr/faces/pages/mobile/validadorqr.jsf?D1=10&D2=1&D3={d3}"
 
     qr_bytes, barcode_bytes = generar_qr_y_barcode(url_qr, rfc_val)
 
