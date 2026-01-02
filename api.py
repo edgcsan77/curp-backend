@@ -3,7 +3,7 @@ import os
 import json
 import random
 
-from fastapi import Depends
+from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,7 +14,6 @@ from models import Persona
 from sqlalchemy.orm import Session
 
 from fastapi.responses import FileResponse
-from fastapi import Depends
 from sqlalchemy.orm import Session
 from pathlib import Path
 from datetime import datetime
