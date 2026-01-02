@@ -256,7 +256,94 @@ def generar_constancia_endpoint(peticion: PeticionConstancia, db: Session = Depe
         
 @app.post("/api/constancia/docx")
 def generar_constancia_docx(peticion: PeticionConstancia, db: Session = Depends(get_db)):
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+    from pathlib import Path
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    import random
+
+    # ==========================
+    # Helpers de formato (igual idea que tu script)
+    # ==========================
+    MESES_ES = {
+        1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL", 5: "MAYO", 6: "JUNIO",
+        7: "JULIO", 8: "AGOSTO", 9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE",
+    }
+
+    def ahora_mex():
+        try:
+            return datetime.now(ZoneInfo("America/Mexico_City"))
+        except Exception:
+            return datetime.utcnow()
+
+    def fecha_actual_lugar(localidad: str, entidad: str) -> str:
+        """
+        'REYNOSA , TAMAULIPAS A 01 DE ENERO DE 2026'
+        """
+        a = ahora_mex().date()
+        dd = str(a.day).zfill(2)
+        mes = MESES_ES.get(a.month, str(a.month).zfill(2))
+        yyyy = a.year
+
+        loc = (localidad or "").strip().upper()
+        ent = (entidad or "").strip().upper()
+
+        if loc and ent:
+            pref = f"{loc} , {ent} A "
+        elif loc:
+            pref = f"{loc} A "
+        elif ent:
+            pref = f"{ent} A "
+        else:
+            pref = ""
+
+        return f"{pref}{dd} DE {mes} DE {yyyy}"
+
+    def ddmmyyyy_a_texto(d_str: str) -> str:
+        """
+        '01-08-2020' -> '01 DE AGOSTO DE 2020'
+        Acepta también '01/08/2020'
+        """
+        if not d_str:
+            return ""
+        s = d_str.strip()
+        sep = "-" if "-" in s else ("/" if "/" in s else None)
+        if not sep:
+            return s
+
+        parts = s.split(sep)
+        if len(parts) != 3:
+            return s
+
+        dd, mm, yyyy = parts
+        try:
+            dd2 = str(int(dd)).zfill(2)
+            mm_i = int(mm)
+            yyyy_i = int(yyyy)
+        except ValueError:
+            return s
+
+        mes = MESES_ES.get(mm_i, str(mm).zfill(2))
+        return f"{dd2} DE {mes} DE {yyyy_i}"
+
+    def a_fecha_alta_slash(d_str: str) -> str:
+        """
+        '01-08-2020' -> '01/08/2020'
+        Si ya viene con '/', lo deja.
+        """
+        if not d_str:
+            return ""
+        s = d_str.strip()
+        if "/" in s:
+            return s
+        if "-" in s:
+            return s.replace("-", "/")
+        return s
+
+    # ==========================
     # 1) Validaciones mínimas
+    # ==========================
     curp = (peticion.curp or "").strip().upper()
     if len(curp) != 18:
         raise HTTPException(status_code=400, detail="CURP debe tener 18 caracteres")
@@ -265,7 +352,9 @@ def generar_constancia_docx(peticion: PeticionConstancia, db: Session = Depends(
     if not rfc:
         raise HTTPException(status_code=400, detail="Falta el RFC (campo 'rfc').")
 
+    # ==========================
     # 2) Datos base (manuales)
+    # ==========================
     datos_curp = {
         "nombre": (peticion.nombre or "").strip().upper(),
         "apellido_paterno": (peticion.apellido_paterno or "").strip().upper(),
@@ -276,71 +365,58 @@ def generar_constancia_docx(peticion: PeticionConstancia, db: Session = Depends(
     }
 
     if not datos_curp["nombre"] or not datos_curp["apellido_paterno"] or not datos_curp["fecha_nac_str"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Faltan campos requeridos: nombre, apellido_paterno, fecha_nac_str"
-        )
-
+        raise HTTPException(status_code=400, detail="Faltan campos: nombre, apellido_paterno, fecha_nac_str")
     if not datos_curp["entidad_registro"] or not datos_curp["municipio_registro"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Faltan campos requeridos: entidad_registro y municipio_registro"
-        )
+        raise HTTPException(status_code=400, detail="Faltan campos: entidad_registro, municipio_registro")
 
-    # 3) Fechas: nacimiento (real) + inicio/alta/ultimo (opcionales o auto)
+    # ==========================
+    # 3) Fechas base (si no mandas, se generan como antes)
+    # ==========================
     try:
         fecha_nac, fecha_inicio_auto = core.generar_fechas(datos_curp["fecha_nac_str"])
     except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail="fecha_nac_str inválida. Usa formato DD/MM/AAAA (ej: 22/07/2002)."
-        )
+        raise HTTPException(status_code=400, detail="fecha_nac_str inválida. Usa DD/MM/AAAA (ej: 22/07/2002).")
 
+    # Salidas tipo "dd-mm-aaaa"
     fecha_nac_str_out = core.formatear_dd_mm_aaaa(fecha_nac)
+    fecha_inicio_out = core.formatear_dd_mm_aaaa(fecha_inicio_auto)
 
-    # Si mandan fecha_inicio_operaciones (DD-MM-YYYY) úsala, si no usa la auto
-    fecha_inicio_str_out = (
-        peticion.fecha_inicio_operaciones.strip()
-        if getattr(peticion, "fecha_inicio_operaciones", None)
-        else core.formatear_dd_mm_aaaa(fecha_inicio_auto)
-    )
+    # Si el user manda fechas, las respetamos (esperado: dd-mm-aaaa)
+    fecha_inicio_oper = (peticion.fecha_inicio_operaciones or "").strip() or fecha_inicio_out
+    fecha_ultimo_cambio = (peticion.fecha_ultimo_cambio or "").strip() or fecha_inicio_oper
+    fecha_alta_raw = (peticion.fecha_alta or "").strip() or fecha_inicio_oper  # en tu sistema suele ser igual
 
-    # Si mandan fecha_ultimo_cambio úsala, si no igual a inicio
-    fecha_ultimo_cambio_str_out = (
-        peticion.fecha_ultimo_cambio.strip()
-        if getattr(peticion, "fecha_ultimo_cambio", None)
-        else fecha_inicio_str_out
-    )
+    # Formatos para placeholders:
+    # {{ FECHA INICIO }} y {{ FECHA ULTIMO }} -> "01 DE AGOSTO DE 2020"
+    fecha_inicio_texto = ddmmyyyy_a_texto(fecha_inicio_oper)
+    fecha_ultimo_texto = ddmmyyyy_a_texto(fecha_ultimo_cambio)
 
-    # Si mandan fecha_alta úsala, si no igual a inicio
-    fecha_alta = (
-        peticion.fecha_alta.strip()
-        if getattr(peticion, "fecha_alta", None)
-        else fecha_inicio_str_out
-    )
+    # {{ FECHA ALTA }} -> "01/08/2020"
+    fecha_alta = a_fecha_alta_slash(fecha_alta_raw)
 
-    # 4) Régimen: si lo mandan úsalo, si no el default del core
-    regimen_final = (getattr(peticion, "regimen", None) or core.REGIMEN).strip()
+    # ==========================
+    # 4) Régimen (si te lo mandan, úsalo)
+    # ==========================
+    regimen_final = (peticion.regimen or core.REGIMEN).strip()
 
-    # 5) Dirección: manual si viene “algo”, si no automática OSM+SEPOMEX
+    # ==========================
+    # 5) Domicilio (manual si viene algo, si no auto)
+    # ==========================
     dom_entidad = datos_curp["entidad_registro"]
     dom_municipio = datos_curp["municipio_registro"]
 
     viene_algo_domicilio = any([
-        getattr(peticion, "colonia", None),
-        getattr(peticion, "cp", None),
-        getattr(peticion, "nombre_vialidad", None),
-        getattr(peticion, "numero_exterior", None),
+        peticion.colonia, peticion.cp, peticion.nombre_vialidad, peticion.numero_exterior
     ])
 
     if viene_algo_domicilio:
         direccion = {
-            "colonia": (getattr(peticion, "colonia", "") or "").strip().upper() or "S/C",
-            "tipo_vialidad": (getattr(peticion, "tipo_vialidad", "") or "").strip().upper() or "CALLE",
-            "nombre_vialidad": (getattr(peticion, "nombre_vialidad", "") or "").strip().upper() or "S/N",
-            "numero_exterior": (getattr(peticion, "numero_exterior", "") or "").strip().upper() or "S/N",
-            "numero_interior": (getattr(peticion, "numero_interior", "") or "").strip().upper() or "",
-            "cp": (getattr(peticion, "cp", "") or "").strip() or "00000",
+            "colonia": (peticion.colonia or "").strip().upper() or "S/C",
+            "tipo_vialidad": (peticion.tipo_vialidad or "").strip().upper() or "CALLE",
+            "nombre_vialidad": (peticion.nombre_vialidad or "").strip().upper() or "S/N",
+            "numero_exterior": (peticion.numero_exterior or "").strip().upper() or "S/N",
+            "numero_interior": (peticion.numero_interior or "").strip().upper() or "",
+            "cp": (peticion.cp or "").strip() or "00000",
         }
     else:
         direccion = core.generar_direccion_real(
@@ -350,32 +426,31 @@ def generar_constancia_docx(peticion: PeticionConstancia, db: Session = Depends(
             permitir_fallback=True,
         )
 
-    # 6) CIF / D3 (para el QR dentro del DOCX)
+    # ==========================
+    # 6) CIF / D3 (para QR interno)
+    # ==========================
     cif_num = random.randint(10_000_000_000, 30_000_000_000)
     cif_str = str(cif_num)
     D1, D2 = "10", "1"
     D3 = f"{cif_str}_{rfc}"
 
-    # 7) Fechas para etiqueta (corta/larga)
-    ahora = datetime.now(ZoneInfo("America/Mexico_City"))
-    fecha_corta = ahora.strftime("%Y/%m/%d %H:%M:%S")
+    # ==========================
+    # 7) FECHA / FECHA CORTA
+    # ==========================
+    entidad_formateada = core.formatear_entidad_salida(dom_entidad)
+    fecha_larga = fecha_actual_lugar(dom_municipio, entidad_formateada)  # <- EXACTO como tu ejemplo
+    fecha_corta = ahora_mex().strftime("%Y/%m/%d %H:%M:%S")
 
-    # Fecha larga estilo “01 DE ENERO DE 2026”
-    meses = [
-        "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
-        "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"
-    ]
-    fecha_larga = f"{ahora.day:02d} DE {meses[ahora.month - 1]} DE {ahora.year}"
-
+    # ==========================
+    # 8) Nombre etiqueta
+    # ==========================
     nombre_etiqueta = " ".join(
-        x for x in [
-            datos_curp["nombre"],
-            datos_curp["apellido_paterno"],
-            datos_curp["apellido_materno"],
-        ] if x
+        x for x in [datos_curp["nombre"], datos_curp["apellido_paterno"], datos_curp["apellido_materno"]] if x
     ).strip()
 
-    # 8) Datos para plantilla DOCX (placeholders)
+    # ==========================
+    # 9) Datos para plantilla
+    # ==========================
     datos_doc = {
         "RFC_ETIQUETA": rfc,
         "NOMBRE_ETIQUETA": nombre_etiqueta,
@@ -387,9 +462,10 @@ def generar_constancia_docx(peticion: PeticionConstancia, db: Session = Depends(
         "PRIMER_APELLIDO": datos_curp["apellido_paterno"],
         "SEGUNDO_APELLIDO": datos_curp["apellido_materno"],
 
-        "FECHA_INICIO": fecha_inicio_str_out,
+        # ✅ formatos requeridos:
+        "FECHA_INICIO": fecha_inicio_texto,
         "ESTATUS": core.SITUACION_CONTRIBUYENTE,
-        "FECHA_ULTIMO": fecha_ultimo_cambio_str_out,
+        "FECHA_ULTIMO": fecha_ultimo_texto,
         "FECHA": fecha_larga,
         "FECHA_CORTA": fecha_corta,
 
@@ -400,15 +476,16 @@ def generar_constancia_docx(peticion: PeticionConstancia, db: Session = Depends(
         "NO_INTERIOR": direccion["numero_interior"],
         "COLONIA": direccion["colonia"],
         "LOCALIDAD": dom_municipio,
-        "ENTIDAD": core.formatear_entidad_salida(dom_entidad),
+        "ENTIDAD": entidad_formateada,
 
         "REGIMEN": regimen_final,
         "FECHA_ALTA": fecha_alta,
     }
 
-    # 9) Elegir plantilla (asalariado vs normal)
+    # ==========================
+    # 10) Elegir plantilla
+    # ==========================
     base_dir = Path(__file__).resolve().parent
-
     if regimen_final == "Régimen de Sueldos y Salarios e Ingresos Asimilados a Salarios":
         plantilla = base_dir / "plantilla-asalariado.docx"
     else:
@@ -417,10 +494,14 @@ def generar_constancia_docx(peticion: PeticionConstancia, db: Session = Depends(
     if not plantilla.exists():
         raise HTTPException(status_code=500, detail=f"No existe la plantilla: {plantilla.name}")
 
-    # 10) Generar DOCX con tu util (incluye QR + barcode adentro)
+    # ==========================
+    # 11) Generar DOCX
+    # ==========================
     ruta_docx = generar_docx_desde_plantilla(datos_doc, str(plantilla))
 
-    # 11) Responder descarga
+    # ==========================
+    # 12) Responder descarga
+    # ==========================
     filename = f"{curp}_RFC.docx"
     return FileResponse(
         ruta_docx,
